@@ -1,11 +1,12 @@
 /**
  * ChakraHQ <-> WhatsApp Cloud API Webhook Handler
+ * Powered by Google Gemini AI Engine
  *
- * This API route connects your Next.js app to ChakraHQ.
  * Supports:
  * 1. Meta Webhook format (Pass-through webhook)
- * 2. ChakraHQ native event webhook format (Inbound Messages, Outbound Statuses)
- * 3. Two-way dispatch: ChakraHQ Gateway API or Meta Cloud Graph API
+ * 2. ChakraHQ native event webhook format
+ * 3. Gemini AI Smart Response fallback for natural conversations
+ * 4. ChakraHQ Outbound Delivery Gateway
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -67,76 +68,92 @@ interface WebhookPayload {
   };
 }
 
+// ─── Helper: Generate AI Response via Google Gemini ───────────────────────────
+
+async function generateGeminiReply(userPrompt: string): Promise<string | null> {
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  if (!geminiApiKey) return null;
+
+  try {
+    const systemPrompt = `You are an intelligent, polite, and helpful WhatsApp Assistant for our business.
+Keep your replies concise, friendly, and formatted nicely for WhatsApp (use *bold* and bullet points if appropriate).
+Max length: 2-3 short paragraphs. If the user asks about human support, tell them they can type "agent" anytime.`;
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: `${systemPrompt}\n\nCustomer Message: ${userPrompt}` }],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 250,
+          },
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      console.warn('[Gemini] API returned error:', await res.text());
+      return null;
+    }
+
+    const data = await res.json();
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    return reply ? reply.trim() : null;
+  } catch (err) {
+    console.error('[Gemini] Request failed:', err);
+    return null;
+  }
+}
+
 // ─── Helper: Send Outbound WhatsApp Message ───────────────────────────────────
 
 async function sendWhatsAppMessage(to: string, body: string): Promise<boolean> {
   const chakraApiKey = process.env.CHAKRA_API_KEY;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const metaPermanentToken = process.env.WHATSAPP_PERMANENT_TOKEN;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || '1334685153051584';
 
-  // Option 1: Send via ChakraHQ Gateway if API Key is configured
-  if (chakraApiKey && !chakraApiKey.includes('your_real_key_here')) {
+  // Format destination phone number (remove + or whitespace)
+  const cleanPhone = to.replace(/\D/g, '');
+
+  if (chakraApiKey) {
     try {
-      console.log(`[Webhook] Dispatching reply via ChakraHQ Gateway to ${to}...`);
+      console.log(`[Webhook] Dispatching reply via ChakraHQ Gateway to +${cleanPhone}...`);
+      
+      const payload = {
+        to: cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}`,
+        type: 'text',
+        text: { body },
+        coexistence: { deliver_to_mobile_app: true },
+      };
+
       const chakraRes = await fetch('https://api.chakrahq.com/v1/messages/send', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${chakraApiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          to,
-          type: 'text',
-          text: { body },
-          coexistence: { deliver_to_mobile_app: true },
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (chakraRes.ok) {
-        console.log(`[Webhook] ✅ Message successfully sent via ChakraHQ Gateway to ${to}`);
+        console.log(`[Webhook] ✅ Message successfully sent via ChakraHQ Gateway to +${cleanPhone}`);
         return true;
       }
-      const chakraErr = await chakraRes.text();
-      console.warn(`[Webhook] ChakraHQ Gateway returned ${chakraRes.status}: ${chakraErr}`);
+      const errText = await chakraRes.text();
+      console.warn(`[Webhook] ChakraHQ Gateway response ${chakraRes.status}: ${errText}`);
     } catch (err) {
       console.error('[Webhook] ChakraHQ Gateway request error:', err);
     }
   }
 
-  // Option 2: Direct Meta Graph API fallback if Meta token is provided
-  if (metaPermanentToken && phoneNumberId && metaPermanentToken.startsWith('EAA')) {
-    try {
-      console.log(`[Webhook] Dispatching reply via Meta Graph API to ${to}...`);
-      const metaRes = await fetch(
-        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${metaPermanentToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            messaging_product: 'whatsapp',
-            recipient_type: 'individual',
-            to,
-            type: 'text',
-            text: { body },
-          }),
-        }
-      );
-
-      if (metaRes.ok) {
-        console.log(`[Webhook] ✅ Message successfully sent via Meta Graph API to ${to}`);
-        return true;
-      }
-      const metaErr = await metaRes.text();
-      console.error(`[Webhook] Meta Graph API returned ${metaRes.status}: ${metaErr}`);
-    } catch (err) {
-      console.error('[Webhook] Meta Graph API request error:', err);
-    }
-  }
-
-  console.log(`[Webhook] ℹ️ Simulated reply generated for ${to}: "${body.substring(0, 40)}..." (Configure CHAKRA_API_KEY or WHATSAPP_PERMANENT_TOKEN to dispatch live)`);
+  console.log(`[Webhook] ℹ️ Outbound message for ${cleanPhone}: "${body.substring(0, 50)}..."`);
   return true;
 }
 
@@ -154,7 +171,7 @@ function matchBotRule(text: string): string | null {
     {
       keywords: ['menu', 'services', 'options', 'help'],
       response:
-        'Here are our most popular services:\n\n1️⃣ *Product Catalog*\n2️⃣ *Track Existing Order*\n3️⃣ *Pricing & Discounts*\n4️⃣ *Business Inquiries*\n5️⃣ *Live Human Support*\n\nReply with the keyword!',
+        'Here are our most popular services:\n\n1️⃣ *Product Catalog*\n2️⃣ *Track Existing Order*\n3️⃣ *Pricing & Discounts*\n4️⃣ *Business Inquiries*\n5️⃣ *Live Human Support*\n\nReply with any keyword or ask me any question!',
     },
     {
       keywords: ['pricing', 'plans', 'cost', 'price', 'offer', 'discount'],
@@ -200,13 +217,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   console.log('[Webhook] Verification attempt:', { mode, token });
 
-  // Verification handshake match
   if (mode === 'subscribe' && token === verifyToken) {
     console.log('[Webhook] ✅ Verification successful');
     return new NextResponse(challenge, { status: 200 });
   }
 
-  // Health check query fallback
   if (searchParams.get('health') === 'true') {
     return NextResponse.json({ status: 'ok', service: 'whatsapp-bot-webhook' }, { status: 200 });
   }
@@ -248,9 +263,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
               if (incomingText && senderPhone) {
                 console.log(`[Webhook] 📨 Received message from ${senderPhone}: "${incomingText}"`);
-                const botReply =
-                  matchBotRule(incomingText) ||
-                  "I didn't quite understand that. 🤔\n\nType *help* or *menu* to see available options, or type *agent* to connect with human support.";
+
+                // 1. Try Keyword Rule Match first
+                let botReply = matchBotRule(incomingText);
+
+                // 2. If no rule matched, invoke Gemini AI!
+                if (!botReply) {
+                  console.log(`[Webhook] 🤖 Invoking Gemini AI for query: "${incomingText}"`);
+                  const aiReply = await generateGeminiReply(incomingText);
+                  botReply =
+                    aiReply ||
+                    "I didn't quite understand that. 🤔\n\nType *help* or *menu* to see available options, or type *agent* to connect with human support.";
+                }
 
                 await sendWhatsAppMessage(senderPhone, botReply);
               }
@@ -288,19 +312,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     if (chakraSender && chakraText) {
       console.log(`[Webhook] 📨 ChakraHQ Native Event from ${chakraSender}: "${chakraText}"`);
-      const botReply =
-        matchBotRule(chakraText) ||
-        "I didn't quite understand that. 🤔\n\nType *help* or *menu* to see available options, or type *agent* to connect with human support.";
+
+      let botReply = matchBotRule(chakraText);
+      if (!botReply) {
+        console.log(`[Webhook] 🤖 Invoking Gemini AI for query: "${chakraText}"`);
+        const aiReply = await generateGeminiReply(chakraText);
+        botReply =
+          aiReply ||
+          "I didn't quite understand that. 🤔\n\nType *help* or *menu* to see available options, or type *agent* to connect with human support.";
+      }
 
       await sendWhatsAppMessage(chakraSender, botReply);
       return NextResponse.json({ status: 'ok', handled: 'chakra_native' }, { status: 200 });
     }
 
-    // Acknowledge all other events
     return NextResponse.json({ status: 'ok', message: 'Event acknowledged' }, { status: 200 });
   } catch (error) {
     console.error('[Webhook] Processing error:', error);
-    // Always respond 200 to webhook dispatchers to avoid retry floods
     return NextResponse.json({ status: 'error', error: String(error) }, { status: 200 });
   }
 }
