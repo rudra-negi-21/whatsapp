@@ -79,43 +79,48 @@ async function generateGeminiReply(userPrompt: string): Promise<string | null> {
   const geminiApiKey = process.env.GEMINI_API_KEY;
   if (!geminiApiKey) return null;
 
-  try {
-    const systemPrompt = `You are an intelligent, polite, and helpful WhatsApp Assistant for our business.
-Keep your replies concise, friendly, and formatted nicely for WhatsApp (use *bold* and bullet points if appropriate).
-Max length: 2 short paragraphs. If the user asks for human support, tell them they can type "agent" anytime.`;
+  const models = ['gemini-flash-lite-latest', 'gemini-3.5-flash-lite'];
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: `${systemPrompt}\n\nCustomer Message: ${userPrompt}` }],
+  for (const model of models) {
+    try {
+      const systemPrompt = `You are a helpful, professional, and friendly WhatsApp AI Assistant for our business.
+Keep your replies concise, helpful, and formatted nicely for WhatsApp using *bold* text where appropriate.
+Keep answers under 2-3 short sentences. If the user asks for a human agent or support team, tell them they can type *agent* anytime.`;
+
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: `${systemPrompt}\n\nCustomer: ${userPrompt}` }],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 200,
             },
-          ],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 250,
-          },
-        }),
+          }),
+        }
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (reply && reply.trim()) {
+          console.log(`[Gemini] ✅ Successfully generated reply with ${model}`);
+          return reply.trim();
+        }
       }
-    );
-
-    if (!res.ok) {
-      console.warn('[Gemini] API returned error:', await res.text());
-      return null;
+    } catch (err) {
+      console.warn(`[Gemini] Model ${model} failed, trying next...`, err);
     }
-
-    const data = await res.json();
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    return reply ? reply.trim() : null;
-  } catch (err) {
-    console.error('[Gemini] Request failed:', err);
-    return null;
   }
+
+  return null;
 }
 
 // ─── Helper: Send Outbound WhatsApp Message via Official ChakraHQ Endpoint ────
