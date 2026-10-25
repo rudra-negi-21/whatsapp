@@ -53,8 +53,12 @@ interface WebhookPayload {
   object?: string;
   entry?: MetaWebhookEntry[];
   event?: string;
+  messageId?: string;
   payload?: {
+    messageId?: string;
+    externalId?: string;
     message?: {
+      id?: string;
       from?: string;
       text?: { body?: string } | string;
       type?: string;
@@ -211,6 +215,28 @@ function matchBotRule(text: string): string | null {
   return null;
 }
 
+// ─── Deduplication Cache (Prevents double messages from dual-webhook triggers) 
+const recentProcessedIds = new Map<string, number>();
+
+function isDuplicate(id?: string): boolean {
+  if (!id) return false;
+  const now = Date.now();
+
+  // Clean entries older than 2 minutes
+  for (const [key, timestamp] of recentProcessedIds.entries()) {
+    if (now - timestamp > 120000) {
+      recentProcessedIds.delete(key);
+    }
+  }
+
+  if (recentProcessedIds.has(id)) {
+    return true;
+  }
+
+  recentProcessedIds.set(id, now);
+  return false;
+}
+
 // ─── GET /api/webhook — Verification ──────────────────────────────────────────
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -249,6 +275,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
           if (Array.isArray(value.messages)) {
             for (const message of value.messages) {
+              const msgId = message.id;
+              if (isDuplicate(msgId)) {
+                console.log(`[Webhook] ⏭️ Skipping duplicate message ID: ${msgId}`);
+                continue;
+              }
+
               const senderPhone = message.from;
               let incomingText = '';
 
@@ -283,6 +315,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── CASE 2: ChakraHQ Native Event Format ──────────────────────────────────
+    const chakraMsgId =
+      body.payload?.messageId ||
+      body.payload?.message?.id ||
+      body.message?.id ||
+      body.messageId;
+
+    if (isDuplicate(chakraMsgId)) {
+      console.log(`[Webhook] ⏭️ Skipping duplicate ChakraHQ message ID: ${chakraMsgId}`);
+      return NextResponse.json({ status: 'ok', ignored: 'duplicate' }, { status: 200 });
+    }
+
     const chakraSender =
       body.payload?.message?.from ||
       body.message?.from ||
