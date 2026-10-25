@@ -1,15 +1,14 @@
 /**
  * ChakraHQ <-> WhatsApp Cloud API Webhook Handler
- * Powered by Google Gemini AI Engine
- *
- * Supports:
- * 1. Meta Webhook format (Pass-through webhook)
- * 2. ChakraHQ native event webhook format
- * 3. Gemini AI Smart Response fallback for natural conversations
- * 4. ChakraHQ Outbound Delivery Gateway
+ * Powered by Google Gemini AI Engine & Official ChakraHQ Delivery Gateway
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const CHAKRA_PLUGIN_ID = process.env.CHAKRA_PLUGIN_ID || '837dc97a-d006-48fa-9a5f-8cc092a71a56';
+const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '1334685153051584';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -53,10 +52,16 @@ interface MetaWebhookEntry {
 interface WebhookPayload {
   object?: string;
   entry?: MetaWebhookEntry[];
-  // ChakraHQ Native Payload Support
   event?: string;
+  payload?: {
+    message?: {
+      from?: string;
+      text?: { body?: string } | string;
+      type?: string;
+    };
+    contacts?: Array<{ profile?: { name?: string }; wa_id?: string }>;
+  };
   from?: string;
-  to?: string;
   phone?: string;
   senderPhone?: string;
   text?: string | { body?: string };
@@ -77,7 +82,7 @@ async function generateGeminiReply(userPrompt: string): Promise<string | null> {
   try {
     const systemPrompt = `You are an intelligent, polite, and helpful WhatsApp Assistant for our business.
 Keep your replies concise, friendly, and formatted nicely for WhatsApp (use *bold* and bullet points if appropriate).
-Max length: 2-3 short paragraphs. If the user asks about human support, tell them they can type "agent" anytime.`;
+Max length: 2 short paragraphs. If the user asks for human support, tell them they can type "agent" anytime.`;
 
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`,
@@ -113,39 +118,37 @@ Max length: 2-3 short paragraphs. If the user asks about human support, tell the
   }
 }
 
-// ─── Helper: Send Outbound WhatsApp Message ───────────────────────────────────
+// ─── Helper: Send Outbound WhatsApp Message via Official ChakraHQ Endpoint ────
 
 async function sendWhatsAppMessage(to: string, body: string): Promise<boolean> {
   const chakraApiKey = process.env.CHAKRA_API_KEY;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || '1334685153051584';
-
-  // Format destination phone number (remove + or whitespace)
   const cleanPhone = to.replace(/\D/g, '');
 
   if (chakraApiKey) {
     try {
-      console.log(`[Webhook] Dispatching reply via ChakraHQ Gateway to +${cleanPhone}...`);
-      
-      const payload = {
-        to: cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}`,
-        type: 'text',
-        text: { body },
-        coexistence: { deliver_to_mobile_app: true },
-      };
+      const url = `https://api.chakrahq.com/v1/ext/plugin/whatsapp/${CHAKRA_PLUGIN_ID}/api/v22.0/${WHATSAPP_PHONE_ID}/messages`;
+      console.log(`[Webhook] Dispatching reply via ChakraHQ to ${cleanPhone}...`);
 
-      const chakraRes = await fetch('https://api.chakrahq.com/v1/messages/send', {
+      const chakraRes = await fetch(url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${chakraApiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: cleanPhone,
+          type: 'text',
+          text: { body },
+        }),
       });
 
       if (chakraRes.ok) {
-        console.log(`[Webhook] ✅ Message successfully sent via ChakraHQ Gateway to +${cleanPhone}`);
+        const data = await chakraRes.json();
+        console.log(`[Webhook] ✅ Message successfully sent via ChakraHQ to ${cleanPhone}! ID:`, data?._data?.whatsappMessageId);
         return true;
       }
+
       const errText = await chakraRes.text();
       console.warn(`[Webhook] ChakraHQ Gateway response ${chakraRes.status}: ${errText}`);
     } catch (err) {
@@ -153,8 +156,7 @@ async function sendWhatsAppMessage(to: string, body: string): Promise<boolean> {
     }
   }
 
-  console.log(`[Webhook] ℹ️ Outbound message for ${cleanPhone}: "${body.substring(0, 50)}..."`);
-  return true;
+  return false;
 }
 
 // ─── Helper: Match incoming text against bot rules ────────────────────────────
@@ -204,7 +206,7 @@ function matchBotRule(text: string): string | null {
   return null;
 }
 
-// ─── GET /api/webhook — Meta & Chakra Webhook Verification ─────────────────────
+// ─── GET /api/webhook — Verification ──────────────────────────────────────────
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(req.url);
@@ -215,10 +217,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || 'my_secure_webhook_token_2026';
 
-  console.log('[Webhook] Verification attempt:', { mode, token });
-
   if (mode === 'subscribe' && token === verifyToken) {
-    console.log('[Webhook] ✅ Verification successful');
     return new NextResponse(challenge, { status: 200 });
   }
 
@@ -226,17 +225,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ status: 'ok', service: 'whatsapp-bot-webhook' }, { status: 200 });
   }
 
-  console.warn('[Webhook] ❌ Verification failed — token mismatch');
   return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 }
 
-// ─── POST /api/webhook — Receive Events from ChakraHQ / Meta ──────────────────
+// ─── POST /api/webhook — Process Inbound Messages ─────────────────────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     const rawBody = await req.json();
-    console.log('[Webhook] Incoming event payload:', JSON.stringify(rawBody, null, 2));
-
     const body = rawBody as WebhookPayload;
 
     // ── CASE 1: Meta Cloud API Format (Pass-through webhook) ──────────────────
@@ -246,7 +242,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           const value = change.value;
           if (!value) continue;
 
-          // Process inbound messages
           if (Array.isArray(value.messages)) {
             for (const message of value.messages) {
               const senderPhone = message.from;
@@ -264,10 +259,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               if (incomingText && senderPhone) {
                 console.log(`[Webhook] 📨 Received message from ${senderPhone}: "${incomingText}"`);
 
-                // 1. Try Keyword Rule Match first
                 let botReply = matchBotRule(incomingText);
-
-                // 2. If no rule matched, invoke Gemini AI!
                 if (!botReply) {
                   console.log(`[Webhook] 🤖 Invoking Gemini AI for query: "${incomingText}"`);
                   const aiReply = await generateGeminiReply(incomingText);
@@ -280,34 +272,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               }
             }
           }
-
-          // Process statuses
-          if (Array.isArray(value.statuses)) {
-            for (const status of value.statuses) {
-              console.log(`[Webhook] 📊 Message status update: ${status.id} -> ${status.status}`);
-            }
-          }
         }
       }
       return NextResponse.json({ status: 'ok' }, { status: 200 });
     }
 
-    // ── CASE 2: ChakraHQ Native Event Webhook Format ──────────────────────────
+    // ── CASE 2: ChakraHQ Native Event Format ──────────────────────────────────
     const chakraSender =
+      body.payload?.message?.from ||
+      body.message?.from ||
       body.from ||
       body.phone ||
-      body.senderPhone ||
-      body.message?.from;
+      body.senderPhone;
 
     let chakraText = '';
-    if (typeof body.text === 'string') {
-      chakraText = body.text;
-    } else if (body.text?.body) {
-      chakraText = body.text.body;
+    if (typeof body.payload?.message?.text === 'string') {
+      chakraText = body.payload.message.text;
+    } else if (body.payload?.message?.text?.body) {
+      chakraText = body.payload.message.text.body;
     } else if (typeof body.message?.text === 'string') {
       chakraText = body.message.text;
     } else if (body.message?.text?.body) {
       chakraText = body.message.text.body;
+    } else if (typeof body.text === 'string') {
+      chakraText = body.text;
+    } else if (body.text?.body) {
+      chakraText = body.text.body;
     }
 
     if (chakraSender && chakraText) {
