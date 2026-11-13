@@ -4,38 +4,24 @@ import React from 'react';
 import {
   MessageSquare,
   Zap,
-  Activity,
-  Megaphone,
   Terminal,
   Settings,
   Bot,
   Radio,
-  Users,
-  Layers,
 } from 'lucide-react';
 
-export type ActiveTab =
-  | 'simulator'
-  | 'rules'
-  | 'chakra-inbox'
-  | 'chakra-gateway'
-  | 'analytics'
-  | 'broadcast'
-  | 'logs'
-  | 'settings';
+export type ActiveTab = 'simulator' | 'rules' | 'logs' | 'settings';
 
 interface SidebarProps {
   activeTab: ActiveTab;
   onTabChange: (tab: ActiveTab) => void;
   ruleCount: number;
-  openChatCount?: number;
 }
 
 export default function Sidebar({
   activeTab,
   onTabChange,
   ruleCount,
-  openChatCount = 3,
 }: SidebarProps) {
   const navItems = [
     {
@@ -49,28 +35,6 @@ export default function Sidebar({
       label: 'Bot Rules & Flows',
       icon: Zap,
       badge: `${ruleCount}`,
-    },
-    {
-      id: 'chakra-inbox' as ActiveTab,
-      label: 'Chakra Team Inbox',
-      icon: Users,
-      badge: `${openChatCount}`,
-    },
-    {
-      id: 'chakra-gateway' as ActiveTab,
-      label: 'ChakraHQ Gateway',
-      icon: Layers,
-      badge: 'Coexist',
-    },
-    {
-      id: 'analytics' as ActiveTab,
-      label: 'Analytics & Traffic',
-      icon: Activity,
-    },
-    {
-      id: 'broadcast' as ActiveTab,
-      label: 'Broadcast Campaigns',
-      icon: Megaphone,
     },
     {
       id: 'logs' as ActiveTab,

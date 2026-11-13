@@ -31,31 +31,6 @@ export interface BotRule {
   category: RuleCategory;
 }
 
-export interface AnalyticsMetric {
-  title: string;
-  value: string | number;
-  change: string;
-  isPositive: boolean;
-}
-
-export interface KeywordStat {
-  keyword: string;
-  hits: number;
-  category: RuleCategory;
-}
-
-export interface BroadcastCampaign {
-  id: string;
-  name: string;
-  templateName: string;
-  targetCount: number;
-  sentCount: number;
-  deliveredCount: number;
-  readCount: number;
-  status: 'draft' | 'sending' | 'completed';
-  createdAt: string;
-}
-
 export interface WebhookLog {
   id: string;
   timestamp: string;
@@ -76,77 +51,7 @@ export interface BotSettings {
   defaultFallbackReply: string;
 }
 
-// ChakraHQ Suite Types
-export interface TeamAgent {
-  id: string;
-  name: string;
-  email: string;
-  avatar: string;
-  role: 'admin' | 'agent' | 'supervisor';
-  status: 'online' | 'busy' | 'offline';
-}
-
-export interface InternalNote {
-  id: string;
-  agentId: string;
-  agentName: string;
-  text: string;
-  timestamp: string;
-}
-
-export interface TeamInboxMessage {
-  id: string;
-  sender: 'customer' | 'bot' | 'agent';
-  agentName?: string;
-  text: string;
-  timestamp: string;
-  status: 'sent' | 'delivered' | 'read';
-  isAiGenerated?: boolean;
-}
-
-export type ConversationStatus = 'open' | 'pending' | 'resolved';
-
-export interface TeamInboxConversation {
-  id: string;
-  customerName: string;
-  customerPhone: string;
-  customerAvatar?: string;
-  assignedAgentId?: string;
-  status: ConversationStatus;
-  unreadCount: number;
-  tags: string[];
-  coexistenceSynced: boolean;
-  lastMessage: {
-    text: string;
-    timestamp: string;
-    sender: 'customer' | 'bot' | 'agent';
-  };
-  messages: TeamInboxMessage[];
-  notes: InternalNote[];
-}
-
-export type CoexistenceRoutingMode = 'dual_delivery' | 'bot_first' | 'agent_first';
-
-export interface CoexistenceConfig {
-  isEnabled: boolean;
-  routingMode: CoexistenceRoutingMode;
-  mobileLinkedNumber: string;
-  lastSyncedAt: string;
-  activeSessions: number;
-  syncChatHistory: boolean;
-}
-
-export interface ChakraApiKey {
-  id: string;
-  name: string;
-  keyPrefix: string;
-  role: 'Full Admin' | 'Marketing' | 'Operations' | 'Read Only';
-  createdAt: string;
-  lastUsed: string;
-  isActive: boolean;
-}
-
-export type AiProvider = 'gemini' | 'openai' | 'chakra_ai' | 'custom';
+export type AiProvider = 'gemini' | 'openai' | 'custom';
 
 export interface AiConfig {
   enabled: boolean;
